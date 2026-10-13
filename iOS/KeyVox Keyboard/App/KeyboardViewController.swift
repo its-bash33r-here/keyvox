@@ -1,11 +1,14 @@
 import AVFoundation
 import KeyVoxCore
+import KeyVoxPredictiveKeyboard
 import UIKit
 
 final class KeyboardViewController: UIInputViewController {
     let ipcManager = KeyboardIPCManager()
     let capsLockStateStore = KeyboardCapsLockStateStore()
     let keypressHaptics = KeyboardKeypressHaptics()
+    /// The tap felt on letter and character keys, the system keyboard's text input tap.
+    let characterKeyHaptics = KeyboardKeypressHaptics(generator: KeyboardTextInputHapticPlayer())
     let interactionHaptics = KeyboardInteractionHaptics()
     let indicatorDriver = AudioIndicatorDriver()
     let appSettingsStore = KeyboardAppSettingsStore()
@@ -29,6 +32,9 @@ final class KeyboardViewController: UIInputViewController {
         },
         shouldPreserveLeadingCapitalization: { [weak self] text in
             self?.dictionaryCasingStore.shouldPreserveLeadingCapitalization(in: text) ?? false
+        },
+        isPeriodShortcutEnabled: { [weak self] in
+            self?.typingTraits.allowsPeriodShortcut ?? true
         }
     )
     lazy var dictationChangeController = KeyboardDictationChangeController(
@@ -71,6 +77,25 @@ final class KeyboardViewController: UIInputViewController {
             KeyVoxIPCBridge.writeTTSRequest(request)
         }
     )
+    let letterCaseController = KeyboardLetterCaseController()
+    var symbolPageReturnTracker = KeyboardSymbolPageReturnTracker()
+    /// Checked when the keyboard comes on screen; see `KeyboardInstalledModels`.
+    var installedModels = KeyboardInstalledModels.check()
+    lazy var predictionCoordinator = KeyboardPredictionCoordinator(
+        memory: KeyboardTypingMemory.shared.memory,
+        textBeforeCursor: { [weak self] in self?.textDocumentProxy.documentContextBeforeInput },
+        selectedText: { [weak self] in self?.textDocumentProxy.selectedText },
+        textAfterCursor: { [weak self] in self?.textDocumentProxy.documentContextAfterInput }
+    )
+    var typingTraits = KeyboardTypingTraits.standard
+    /// Whether the keyboard appeared and has yet to read the field, which waits for the system to
+    /// hand over the field's document state.
+    var awaitsFieldState = false
+    /// The user's KeyVox Dictionary, contact names, and text replacements, without what the
+    /// keyboard learned from their typing.
+    var userVocabulary = PersonalVocabulary.empty
+    /// The system's names and text replacements, as last sent (`loadPersonalVocabulary`).
+    var supplementaryLexicon: UILexicon?
     var primaryHeightConstraint: NSLayoutConstraint?
     var keyboardState: KeyboardState = .idle {
         didSet {
@@ -78,7 +103,7 @@ final class KeyboardViewController: UIInputViewController {
             updateUI()
         }
     }
-    var symbolPage: KeyboardSymbolPage = .primary {
+    var symbolPage: KeyboardSymbolPage = .letters {
         didSet {
             updateUI()
         }
@@ -90,8 +115,32 @@ final class KeyboardViewController: UIInputViewController {
             updateUI()
         }
     }
+    /// Whether the screen is in landscape, read on each layout pass; keys are shorter there.
+    var isLandscape = false {
+        didSet {
+            guard isLandscape != oldValue else { return }
+            updatePrimaryViewHeight()
+            updateUI()
+        }
+    }
     var isCapsLockEnabled = false {
         didSet {
+            updateUI()
+        }
+    }
+    /// Whether the focused field holds any letters, read only as the field is set up or its
+    /// text changes. Until it does, the dictation tools show in place of suggestions.
+    var fieldHasLetters = false {
+        didSet {
+            guard fieldHasLetters != oldValue else { return }
+            updateUI()
+        }
+    }
+    /// Whether the last dictation is still as it landed, so the toolbar offers the dictation
+    /// buttons, such as Vibes, to change it in place of suggestions.
+    var isLastDictationUntouched = false {
+        didSet {
+            guard isLastDictationUntouched != oldValue else { return }
             updateUI()
         }
     }
@@ -125,6 +174,9 @@ final class KeyboardViewController: UIInputViewController {
         configureTraitChangeObservation()
         configureHostLifecycleObservers()
         configureControllerBindingsIfNeeded()
+        KeyboardTypingMemory.shared.onLearnedVocabularyChange = { [weak self] in
+            self?.learnedVocabularyDidChange()
+        }
         KeyVoxIPCBridge.reportKeyboardOnboardingState(hasFullAccess: hasFullAccess)
         appSettingsStore.normalizeSelectedVibeIfNeeded()
         syncCapsLockState()
@@ -133,14 +185,25 @@ final class KeyboardViewController: UIInputViewController {
         updateUI()
     }
 
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        isLandscape = view.window?.windowScene?.interfaceOrientation.isLandscape ?? false
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         extensionHostIsActive = true
-        keysMode = .resolve(
-            isCompactKeysEnabled: appSettingsStore.isCompactKeysEnabled,
-            isCompactKeysActive: appSettingsStore.isCompactKeysActive
-        )
+        KeyboardTypingMemory.shared.adoptResetIfNeeded()
+        // Opens as the user's settings say until the field is read, which can still ask for 123.
+        applyOpeningLayout(prefersNumberPage: appSettingsStore.opensOnNumberPage)
+        // The field is read once the system hands over its document state, which it ends with
+        // `textDidChange(_:)`: as a field connects, the system replaces the document state off
+        // the main thread, frees the old one, and waits on the main thread to hand over the
+        // new one, so a read before then, even on a later main-thread turn, can reach freed
+        // memory.
+        awaitsFieldState = true
         preparePresentationIfNeeded()
+        installedModels = KeyboardInstalledModels.check()
         KeyVoxIPCBridge.reportKeyboardOnboardingState(hasFullAccess: hasFullAccess)
         configureDictationBehavior()
         rootContainerView?.keyGridView.resetInteractionState()
@@ -160,12 +223,17 @@ final class KeyboardViewController: UIInputViewController {
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
-        updateActiveInsertionVisualState()
+        if awaitsFieldState, rootContainerView != nil {
+            awaitsFieldState = false
+            prepareTypingForCurrentField()
+            return
+        }
+        handleTypingContextChange()
     }
 
     override func selectionDidChange(_ textInput: UITextInput?) {
         super.selectionDidChange(textInput)
-        updateActiveInsertionVisualState()
+        handleTypingContextChange()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -200,7 +268,7 @@ final class KeyboardViewController: UIInputViewController {
             view.removeConstraint(constraint)
         }
 
-        let heightConstraint = view.heightAnchor.constraint(equalToConstant: keysMode.keyboardHeight)
+        let heightConstraint = view.heightAnchor.constraint(equalToConstant: keysMode.keyboardHeight(isLandscape: isLandscape))
         heightConstraint.priority = .required
         heightConstraint.isActive = true
         primaryHeightConstraint = heightConstraint
@@ -208,7 +276,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func updatePrimaryViewHeight() {
         guard let primaryHeightConstraint else { return }
-        primaryHeightConstraint.constant = keysMode.keyboardHeight
+        primaryHeightConstraint.constant = keysMode.keyboardHeight(isLandscape: isLandscape)
         view.setNeedsLayout()
     }
 
@@ -250,13 +318,12 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         let toolbarMode = currentToolbarMode()
-        let preferredTTSVoiceID = UserDefaults(suiteName: KeyVoxIPCBridge.appGroupID)?
-            .string(forKey: UserDefaultsKeys.ttsVoice)
-        let isTTSReady = KeyboardModelAvailability.isTTSReady(preferredVoiceID: preferredTTSVoiceID)
         rootContainerView?.apply(
             state: keyboardState,
             symbolPage: symbolPage,
             keysMode: keysMode,
+            isLandscape: isLandscape,
+            offersPredictions: typingTraits.showsSuggestions && fieldHasLetters && isLastDictationUntouched == false,
             isCapsLockEnabled: isCapsLockEnabled,
             isDictationCapsApplied: dictationChangeController.displayedCapsTransformApplied,
             isDictationCapsUppercase: dictationChangeController.displayedCapsTextIsUppercase,
@@ -268,18 +335,21 @@ final class KeyboardViewController: UIInputViewController {
             isListFormattingEnabled: dictationChangeController.displayedListFormattingEnabled,
             isLeftHandedLayoutEnabled: appSettingsStore.isLeftHandedKeyboardLayoutEnabled,
             toolbarMode: toolbarMode,
-            isTTSReady: isTTSReady,
-            isTrackpadModeActive: isTrackpadModeActive
+            isTTSReady: installedModels.isTTSReady,
+            isTrackpadModeActive: isTrackpadModeActive,
+            showsNextKeyboardKey: needsInputModeSwitchKey
         )
+        applyLetterCase()
         if toolbarMode != .fullAccessWarning {
             setFullAccessInstructionsPresented(false)
         }
         indicatorDriver.phase = keyboardState.indicatorPhase
+        indicatorDriver.isPlaybackActive = keyboardState.isTTSPlaybackActive
     }
 
     private func currentToolbarMode() -> KeyboardToolbarMode {
         KeyboardToolbarMode.resolve(
-            modelAvailability: KeyboardDictationModelStatus.availability(),
+            modelAvailability: installedModels.dictation,
             hasFullAccess: hasFullAccess,
             hasMicrophonePermission: hasMicrophonePermission
         )
@@ -505,7 +575,9 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @discardableResult
-    func handleKeyActivation(_ kind: KeyboardKeyKind) -> Bool {
+    func handleKeyActivation(_ keyActivation: KeyboardKeyActivation) -> Bool {
+        let activation = resolveContestedTap(keyActivation)
+        let kind = activation.kind
         if kind == .restoreFullKeyboard {
             guard keysMode == .compact else { return false }
             appSettingsStore.setCompactKeysActive(false)
@@ -513,10 +585,28 @@ final class KeyboardViewController: UIInputViewController {
             interactionHaptics.emitMediumIfEnabled()
             return true
         }
+        // ABC shows the full letter keys without turning Compact Keys off, so 123 returns to them.
+        if kind == .abc, keysMode == .compact {
+            keysMode = .full
+        }
+        if kind == .numberSymbols, symbolPage == .letters,
+           KeyboardKeysMode.resolve(
+               isCompactKeysEnabled: appSettingsStore.isCompactKeysEnabled,
+               isCompactKeysActive: appSettingsStore.isCompactKeysActive
+           ) == .compact {
+            keysMode = .compact
+        }
+        updateSymbolPage(for: kind)
+        if let handled = handleTypingActivation(activation) {
+            return handled
+        }
 
         var updatedSymbolPage = symbolPage
         let didHandle = textInputController.handleKeyActivation(
             kind,
+            typesExactly: activation.isHeldKeyChoice,
+            // The delete key's press plays its haptic when the finger lifts; repeats play theirs now.
+            emitsKeypress: kind != .delete || activation.isRepeat,
             symbolPage: &updatedSymbolPage,
             resetCapsLockStateIfNeeded: { [weak self] in
                 self?.resetCapsLockStateIfNeeded()
@@ -525,9 +615,13 @@ final class KeyboardViewController: UIInputViewController {
                 self?.advanceToNextInputMode()
             }
         )
-        symbolPage = updatedSymbolPage
+        // Setting the page redraws the whole keyboard, so only a key that changed it sets it.
+        if updatedSymbolPage != symbolPage {
+            symbolPage = updatedSymbolPage
+        }
         if didHandle {
-            updateActiveInsertionVisualState()
+            recordTypedCharacter(activation)
+            handleTypingContextChange()
         }
         return didHandle
     }
@@ -546,7 +640,7 @@ final class KeyboardViewController: UIInputViewController {
                     self?.textInputController.adjustCursorPosition(by: offset)
                 }
             )
-            updateActiveInsertionVisualState()
+            handleTypingContextChange()
         case .ended, .cancelled:
             isTrackpadModeActive = false
             cursorTrackpadInteractor.end()
@@ -576,11 +670,11 @@ final class KeyboardViewController: UIInputViewController {
             artifactID: artifactID,
             styleIdentifier: styleIdentifier
         )
-        updateActiveInsertionVisualState()
+        handleTypingContextChange()
         emitDelayedTranscriptionLandingHapticIfNeeded()
     }
 
-    private func updateActiveInsertionVisualState() {
+    func updateActiveInsertionVisualState() {
         rootContainerView?.vibesButton.title = dictationChangeController.displayedVibeTitle
         rootContainerView?.vibesButton.displayedVibeStyle = dictationChangeController.displayedVibeStyle
         rootContainerView?.vibesButton.isDisplayedVibeApplied = dictationChangeController.isDisplayedVibeAppliedToCurrentInsertion
@@ -609,6 +703,8 @@ final class KeyboardViewController: UIInputViewController {
         } else {
             interactionHaptics.emitMediumIfEnabled()
         }
+        // A change that could not apply stops tracking the dictation.
+        isLastDictationUntouched = dictationChangeController.hasActiveUntouchedInsertion
     }
 
     private func updateTranscriptionLandingHapticStart(previousState: KeyboardState) {

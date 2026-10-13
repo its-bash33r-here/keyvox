@@ -10,10 +10,19 @@ struct KeyboardCompactKeysTests {
     }
 
     @Test func modesProvideExplicitKeyboardAndGridHeights() {
-        #expect(KeyboardKeysMode.full.keyboardHeight == 286)
-        #expect(KeyboardKeysMode.compact.keyboardHeight == 174)
-        #expect(KeyboardKeysMode.full.keyGridHeight == 216)
-        #expect(KeyboardKeysMode.compact.keyGridHeight == 104)
+        #expect(KeyboardKeysMode.full.keyboardHeight(isLandscape: false) == 286)
+        #expect(KeyboardKeysMode.compact.keyboardHeight(isLandscape: false) == 174)
+        #expect(KeyboardKeysMode.full.keyGridHeight(isLandscape: false) == 216)
+        #expect(KeyboardKeysMode.compact.keyGridHeight(isLandscape: false) == 104)
+    }
+
+    @Test func landscapeShortensFullAndCompactKeys() {
+        #expect(KeyboardKeysMode.full.keyHeight(isLandscape: true) == KeyboardStyle.landscapeKeyHeight)
+        #expect(KeyboardKeysMode.full.keyGridHeight(isLandscape: true) == 152)
+        #expect(KeyboardKeysMode.full.keyboardHeight(isLandscape: true) == 222)
+        #expect(KeyboardKeysMode.compact.keyHeight(isLandscape: true) == KeyboardStyle.landscapeKeyHeight)
+        #expect(KeyboardKeysMode.compact.keyGridHeight(isLandscape: true) == 72)
+        #expect(KeyboardKeysMode.compact.keyboardHeight(isLandscape: true) == 142)
     }
 
     @Test func compactLayoutReusesTheFinalTwoPrimaryRows() {
@@ -25,6 +34,32 @@ struct KeyboardCompactKeysTests {
         #expect(compactRows[0][0].systemImageName == "keyboard")
         #expect(Array(compactRows[0].dropFirst()) == Array(fullRows[2].dropFirst()))
         #expect(compactRows[1] == fullRows[3])
+    }
+
+    @Test func keyboardOpensOnFullLettersWhileCompactKeysAreRemembered() {
+        let layout = KeyboardOpeningLayout.resolve(
+            prefersNumberPage: false,
+            isCompactKeysEnabled: true,
+            isCompactKeysActive: true
+        )
+
+        #expect(layout == KeyboardOpeningLayout(symbolPage: .letters, keysMode: .full))
+    }
+
+    @Test func keyboardOpensOn123InTheRememberedKeysSize() {
+        let compact = KeyboardOpeningLayout.resolve(
+            prefersNumberPage: true,
+            isCompactKeysEnabled: true,
+            isCompactKeysActive: true
+        )
+        let full = KeyboardOpeningLayout.resolve(
+            prefersNumberPage: true,
+            isCompactKeysEnabled: true,
+            isCompactKeysActive: false
+        )
+
+        #expect(compact == KeyboardOpeningLayout(symbolPage: .primary, keysMode: .compact))
+        #expect(full == KeyboardOpeningLayout(symbolPage: .primary, keysMode: .full))
     }
 
     @Test func compactKeysAvailabilityDefaultsOnAndCanBeDisabled() {

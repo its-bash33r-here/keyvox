@@ -1,16 +1,5 @@
 import SwiftUI
 
-enum SettingsTabCopy {
-    enum Keyboard {
-        static let hapticsTitle = "Keyboard Haptics"
-        static let hapticsDescription = "Get haptic feedback from KeyVox keyboard."
-        static let leftHandedLayoutTitle = "Left-Handed Layout"
-        static let leftHandedLayoutDescription = "Mirror keyboard controls for easier left-hand access."
-        static let compactKeysTitle = "Compact Keys"
-        static let compactKeysDescription = "Long-press #+= to use a shorter keyboard."
-    }
-}
-
 extension SettingsTabView {
     @ViewBuilder
     var sessionSection: some View {
@@ -141,36 +130,28 @@ extension SettingsTabView {
 
     @ViewBuilder
     var keyboardSection: some View {
-        AppCard {
-            VStack(spacing: 16) {
-                SettingsRow(
-                    icon: "keyboard",
-                    title: SettingsTabCopy.Keyboard.hapticsTitle,
-                    description: SettingsTabCopy.Keyboard.hapticsDescription,
-                    isOn: $settingsStore.keyboardHapticsEnabled
-                )
+        NavigationLink {
+            KeyboardSettingsView(pendingDeletionConfirmation: $pendingDeletionConfirmation)
+        } label: {
+            AppCard {
+                HStack(alignment: .center, spacing: 12) {
+                    SettingsRow(
+                        icon: "keyboard",
+                        title: KeyboardSettingsCopy.screenTitle,
+                        description: KeyboardSettingsCopy.screenDescription
+                    ) {
+                        EmptyView()
+                    }
 
-                Divider()
-                    .overlay(.white.opacity(0.22))
-
-                SettingsRow(
-                    icon: "switch.2",
-                    title: SettingsTabCopy.Keyboard.leftHandedLayoutTitle,
-                    description: SettingsTabCopy.Keyboard.leftHandedLayoutDescription,
-                    isOn: $settingsStore.leftHandedKeyboardLayoutEnabled
-                )
-
-                Divider()
-                    .overlay(.white.opacity(0.22))
-
-                SettingsRow(
-                    icon: "keyboard.chevron.compact.down",
-                    title: SettingsTabCopy.Keyboard.compactKeysTitle,
-                    description: SettingsTabCopy.Keyboard.compactKeysDescription,
-                    isOn: $settingsStore.compactKeysEnabled
-                )
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 28, weight: .heavy))
+                        .foregroundStyle(.yellow)
+                        .frame(width: 56)
+                }
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

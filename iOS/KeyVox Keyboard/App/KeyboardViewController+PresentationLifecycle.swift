@@ -97,8 +97,35 @@ extension KeyboardViewController {
         rootContainerView.speakButton.addTarget(self, action: #selector(handleSpeakTap), for: .touchUpInside)
         rootContainerView.logoBarView.addTarget(self, action: #selector(handleMicTap), for: .touchUpInside)
         rootContainerView.fullAccessInfoButton.addTarget(self, action: #selector(handleFullAccessInfoTap), for: .touchUpInside)
-        rootContainerView.keyGridView.onKeyActivated = { [weak self] kind in
-            self?.handleKeyActivation(kind) ?? false
+        rootContainerView.keyGridView.onKeyActivated = { [weak self] activation in
+            self?.handleKeyActivation(activation) ?? false
+        }
+        rootContainerView.keyGridView.onDeleteWords = { [weak self] count in
+            self?.handleDeleteWords(count) ?? false
+        }
+        rootContainerView.keyGridView.onCharacterKeyTyped = { [weak self] in
+            self?.characterKeyHaptics.emitKeypressIfEnabled()
+        }
+        rootContainerView.keyGridView.onHeldKeyPopupOpened = { [weak self] in
+            self?.characterKeyHaptics.emitKeypressIfEnabled()
+        }
+        rootContainerView.keyGridView.onDeleteKeyUp = { [weak self] in
+            self?.keypressHaptics.emitKeypressIfEnabled()
+        }
+        rootContainerView.keyGridView.onKeyTouchDown = { [weak self] activation in
+            self?.prepareContestedTap(activation)
+        }
+        rootContainerView.keyGridView.onCharacterGeometryChange = { [weak self] geometry, size in
+            self?.predictionCoordinator.updateGeometry(geometry, keyboardSize: size)
+        }
+        rootContainerView.suggestionBarView.onItemSelected = { [weak self] item in
+            self?.handleSuggestionSelected(item)
+        }
+        rootContainerView.suggestionBarView.onItemLongPressed = { [weak self] item in
+            self?.handleSuggestionLongPressed(item)
+        }
+        predictionCoordinator.onBarChange = { [weak self] bar in
+            self?.rootContainerView?.suggestionBarView.apply(bar)
         }
         rootContainerView.keyGridView.onCompactKeysRequested = { [weak self] in
             self?.handleCompactKeysRequest() ?? false
@@ -127,6 +154,7 @@ extension KeyboardViewController {
         indicatorDriver.stop()
         indicatorDriver.sampleProvider = nil
         indicatorDriver.onUpdate = nil
+        predictionCoordinator.onBarChange = nil
         rootContainerView?.logoBarView.applyPlaybackProgress(0)
         dictationController.unregisterObservers()
 
@@ -154,6 +182,14 @@ extension KeyboardViewController {
             rootContainerView.logoBarView.removeTarget(self, action: #selector(handleMicTap), for: .touchUpInside)
             rootContainerView.fullAccessInfoButton.removeTarget(self, action: #selector(handleFullAccessInfoTap), for: .touchUpInside)
             rootContainerView.keyGridView.onKeyActivated = nil
+            rootContainerView.keyGridView.onDeleteWords = nil
+            rootContainerView.keyGridView.onCharacterKeyTyped = nil
+            rootContainerView.keyGridView.onHeldKeyPopupOpened = nil
+            rootContainerView.keyGridView.onDeleteKeyUp = nil
+            rootContainerView.keyGridView.onKeyTouchDown = nil
+            rootContainerView.keyGridView.onCharacterGeometryChange = nil
+            rootContainerView.suggestionBarView.onItemSelected = nil
+            rootContainerView.suggestionBarView.onItemLongPressed = nil
             rootContainerView.keyGridView.onCompactKeysRequested = nil
             rootContainerView.keyGridView.onSpaceTrackpadEvent = nil
             rootContainerView.keyGridView.setPopupContainerView(nil)
@@ -217,7 +253,9 @@ extension KeyboardViewController {
         ) { [weak self] _ in
             self?.extensionHostIsActive = true
             guard let self else { return }
+            KeyboardTypingMemory.shared.adoptResetIfNeeded()
             self.preparePresentationIfNeeded()
+            self.installedModels = KeyboardInstalledModels.check()
             self.configurePrimaryViewHeight()
             self.syncCapsLockState()
             self.rootContainerView?.keyGridView.resetInteractionState()

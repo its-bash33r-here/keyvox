@@ -101,6 +101,51 @@ struct AppSettingsStoreTests {
         #expect(defaults.object(forKey: UserDefaultsKeys.compactKeysActive) as? Bool == false)
     }
 
+    @Test func keyboardTypingTogglesDefaultToOn() {
+        let defaults = UserDefaults(suiteName: #function)!
+        defaults.removePersistentDomain(forName: #function)
+
+        let store = AppSettingsStore(defaults: defaults)
+
+        #expect(store.autoCapitalizationEnabled)
+        #expect(store.autoCorrectionEnabled)
+        #expect(store.shiftCapsLockEnabled)
+        #expect(store.predictiveTextEnabled)
+        #expect(store.periodShortcutEnabled)
+    }
+
+    @Test func disabledKeyboardTypingTogglesPersistForTheKeyboard() {
+        let defaults = UserDefaults(suiteName: #function)!
+        defaults.removePersistentDomain(forName: #function)
+        let store = AppSettingsStore(defaults: defaults)
+
+        store.autoCapitalizationEnabled = false
+        store.autoCorrectionEnabled = false
+        store.shiftCapsLockEnabled = false
+        store.predictiveTextEnabled = false
+        store.periodShortcutEnabled = false
+        let keyboardSettings = KeyboardAppSettingsStore(defaults: defaults)
+
+        #expect(keyboardSettings.isAutoCapitalizationEnabled == false)
+        #expect(keyboardSettings.isAutoCorrectionEnabled == false)
+        #expect(keyboardSettings.isShiftCapsLockEnabled == false)
+        #expect(keyboardSettings.isPredictiveTextEnabled == false)
+        #expect(keyboardSettings.isPeriodShortcutEnabled == false)
+    }
+
+    @Test func openOnNumberPageDefaultsToOffAndPersistsForTheKeyboard() {
+        let defaults = UserDefaults(suiteName: #function)!
+        defaults.removePersistentDomain(forName: #function)
+        let store = AppSettingsStore(defaults: defaults)
+
+        #expect(store.opensOnNumberPage == false)
+        #expect(KeyboardAppSettingsStore(defaults: defaults).opensOnNumberPage == false)
+
+        store.opensOnNumberPage = true
+
+        #expect(KeyboardAppSettingsStore(defaults: defaults).opensOnNumberPage)
+    }
+
     @Test func selectedVibeDefaultsToNone() {
         let defaults = UserDefaults(suiteName: #function)!
         defaults.removePersistentDomain(forName: #function)

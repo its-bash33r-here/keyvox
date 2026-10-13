@@ -1,4 +1,5 @@
 import UIKit
+import KeyVoxPredictiveKeyboard
 import KeyVoxTextComposition
 
 struct KeyboardTextInsertionResult: Equatable {
@@ -61,6 +62,7 @@ final class KeyboardTextInputController {
     private let documentProxy: any KeyboardTextDocumentProxying
     private let emitKeypress: () -> Void
     private let shouldPreserveLeadingCapitalization: (String) -> Bool
+    private let isPeriodShortcutEnabled: () -> Bool
 
     private var emptyContextDeleteAttempts = 0
     private var lastDeleteTimestamp: TimeInterval = 0
@@ -69,16 +71,78 @@ final class KeyboardTextInputController {
     init(
         documentProxy: any KeyboardTextDocumentProxying,
         emitKeypress: @escaping () -> Void,
-        shouldPreserveLeadingCapitalization: @escaping (String) -> Bool = { _ in false }
+        shouldPreserveLeadingCapitalization: @escaping (String) -> Bool = { _ in false },
+        isPeriodShortcutEnabled: @escaping () -> Bool = { true }
     ) {
         self.documentProxy = documentProxy
         self.emitKeypress = emitKeypress
         self.shouldPreserveLeadingCapitalization = shouldPreserveLeadingCapitalization
+        self.isPeriodShortcutEnabled = isPeriodShortcutEnabled
     }
 
+    /// Deletes `words` whole words before the cursor, each with the spaces after it, for a held
+    /// delete key, and calls `onFinish` once they are gone. Returns false, without calling it,
+    /// when there is a selection or no text in view before the cursor.
+    func deleteWordsBackward(_ words: Int, onFinish: @escaping () -> Void) -> Bool {
+        guard documentProxy.selectedText?.isEmpty ?? true,
+              let context = documentProxy.documentContextBeforeInput,
+              context.isEmpty == false else {
+            return false
+        }
+        pendingSelectionDeletion = nil
+        emitKeypress()
+        deleteWords(words, endingText: context, onFinish: onFinish)
+        return true
+    }
+
+    /// Some hosts, web views among them, show the keyboard only the text since the start of a
+    /// line, and nothing once that is deleted, until the next edit. When the words run past
+    /// what is shown, one more character is deleted, which always belongs to the next word, so
+    /// the host shows the text before it, and the rest of the words go once it does.
+    private func deleteWords(_ words: Int, endingText context: String, onFinish: @escaping () -> Void) {
+        let span = KeyboardWordDeletion.span(ofWords: words, endingText: context)
+        for _ in 0..<span.characterCount {
+            documentProxy.deleteBackward()
+        }
+        let remainingWords = words - span.wordCount
+        guard remainingWords > 0,
+              documentProxy.documentContextBeforeInput?.isEmpty ?? true,
+              documentProxy.hasText else {
+            onFinish()
+            return
+        }
+        documentProxy.deleteBackward()
+        waitForShownText { [weak self] context in
+            guard let self, let context else {
+                onFinish()
+                return
+            }
+            self.deleteWords(remainingWords, endingText: context, onFinish: onFinish)
+        }
+    }
+
+    private func waitForShownText(checks: Int = 10, then continuation: @escaping (String?) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+            guard let self else { return }
+            if let context = self.documentProxy.documentContextBeforeInput, context.isEmpty == false {
+                continuation(context)
+            } else if checks > 1 {
+                self.waitForShownText(checks: checks - 1, then: continuation)
+            } else {
+                continuation(nil)
+            }
+        }
+    }
+
+    /// - Parameters:
+    ///   - typesExactly: Whether a character types exactly as shown, as one picked from a held
+    ///     key's popup does, instead of becoming a curly quote.
+    ///   - emitsKeypress: Whether a deletion plays the keypress haptic now.
     @discardableResult
     func handleKeyActivation(
         _ kind: KeyboardKeyKind,
+        typesExactly: Bool = false,
+        emitsKeypress: Bool = true,
         symbolPage: inout KeyboardSymbolPage,
         resetCapsLockStateIfNeeded: () -> Void,
         advanceToNextInputMode: () -> Void
@@ -86,8 +150,9 @@ final class KeyboardTextInputController {
         switch kind {
         case let .character(value):
             pendingSelectionDeletion = nil
-            emitKeypress()
-            documentProxy.insertText(value)
+            documentProxy.insertText(
+                typesExactly ? value : SmartQuotes.text(for: value, after: documentProxy.documentContextBeforeInput)
+            )
             return true
         case .delete:
             let selectedTextBeforeDeletion = documentProxy.selectedText
@@ -109,13 +174,15 @@ final class KeyboardTextInputController {
                     selectedText: selectedTextBeforeDeletion,
                     documentContextBeforeInput: contextBeforeDeletion
                 )
-                emitKeypress()
+                if emitsKeypress {
+                    emitKeypress()
+                }
                 documentProxy.deleteBackward()
                 return true
             } else {
                 pendingSelectionDeletion = nil
                 if emptyContextDeleteAttempts < 3 {
-                    if emptyContextDeleteAttempts == 0 && isNewDeleteSession {
+                    if emptyContextDeleteAttempts == 0 && isNewDeleteSession && emitsKeypress {
                         emitKeypress()
                     }
                     emptyContextDeleteAttempts += 1
@@ -126,9 +193,12 @@ final class KeyboardTextInputController {
                 }
             }
         case .space:
+            let contextBeforeInput = contextAfterCorrectingPendingSelectionDeletion(
+                documentProxy.documentContextBeforeInput
+            )
             pendingSelectionDeletion = nil
             emitKeypress()
-            if handleDoubleSpacePeriodInsertionIfNeeded() {
+            if handleDoubleSpacePeriodInsertionIfNeeded(contextBeforeInput: contextBeforeInput) {
                 return true
             }
             documentProxy.insertText(" ")
@@ -141,15 +211,39 @@ final class KeyboardTextInputController {
         case .abc:
             pendingSelectionDeletion = nil
             emitKeypress()
+            symbolPage = .letters
+            return true
+        case .alternateSymbols:
+            emitKeypress()
+            symbolPage = .alternate
+            return true
+        case .numberSymbols:
+            emitKeypress()
+            symbolPage = .primary
+            return true
+        case .nextKeyboard:
+            pendingSelectionDeletion = nil
+            emitKeypress()
             resetCapsLockStateIfNeeded()
             advanceToNextInputMode()
             return true
-        case .alternateSymbols, .numberSymbols:
-            emitKeypress()
-            symbolPage.toggle()
-            return true
-        case .restoreFullKeyboard:
+        case .restoreFullKeyboard, .shift:
             return false
+        }
+    }
+
+    /// Applies a typing-session edit at the cursor: deletes around it, then inserts.
+    func apply(_ edit: TextEdit) {
+        pendingSelectionDeletion = nil
+        if edit.deleteAfterCount > 0 {
+            let following = (documentProxy.documentContextAfterInput ?? "").prefix(edit.deleteAfterCount)
+            documentProxy.adjustTextPosition(byCharacterOffset: following.utf16.count)
+        }
+        for _ in 0..<(edit.deleteCount + edit.deleteAfterCount) {
+            documentProxy.deleteBackward()
+        }
+        if edit.insertText.isEmpty == false {
+            documentProxy.insertText(edit.insertText)
         }
     }
 
@@ -323,8 +417,14 @@ final class KeyboardTextInputController {
     }
 
 
-    private func handleDoubleSpacePeriodInsertionIfNeeded() -> Bool {
-        guard let context = documentProxy.documentContextBeforeInput else {
+    /// A space typed over selected text replaces it, so it is never the second space.
+    /// - Parameter contextBeforeInput: The text before the cursor, corrected for a deleted
+    ///   selection the field has not reported yet, so a space that went with the selection
+    ///   does not count as the first space.
+    private func handleDoubleSpacePeriodInsertionIfNeeded(contextBeforeInput: String?) -> Bool {
+        guard isPeriodShortcutEnabled(),
+              documentProxy.selectedText?.isEmpty ?? true,
+              let context = contextBeforeInput else {
             return false
         }
 

@@ -1,9 +1,10 @@
 import Foundation
+import KeyVoxPredictiveKeyboard
 import Testing
 @testable import KeyVox_iOS
 
 struct KeyboardTextInputControllerTests {
-    @Test func characterKeyInsertsTextAndEmitsHaptics() {
+    @Test func characterKeyInsertsTextWithoutKeypressHapticsOfItsOwn() {
         let documentProxy = KeyboardTextDocumentProxySpy()
         let haptics = KeyboardKeypressHapticsSpy()
         let controller = KeyboardTextInputController(
@@ -21,8 +22,36 @@ struct KeyboardTextInputControllerTests {
 
         #expect(handled == true)
         #expect(documentProxy.insertedTexts == ["A"])
-        #expect(haptics.emissionCount == 1)
+        #expect(haptics.emissionCount == 0)
         #expect(symbolPage == .primary)
+    }
+
+    @Test func heldKeyChoiceTypesExactlyAsShown() {
+        let documentProxy = KeyboardTextDocumentProxySpy()
+        let haptics = KeyboardKeypressHapticsSpy()
+        let controller = KeyboardTextInputController(
+            documentProxy: documentProxy,
+            emitKeypress: haptics.emitKeypressIfEnabled
+        )
+        var symbolPage = KeyboardSymbolPage.primary
+        let tapped = SmartQuotes.text(for: SmartQuotes.apostrophe, after: nil)
+
+        _ = controller.handleKeyActivation(
+            .character(SmartQuotes.apostrophe),
+            symbolPage: &symbolPage,
+            resetCapsLockStateIfNeeded: {},
+            advanceToNextInputMode: {}
+        )
+        _ = controller.handleKeyActivation(
+            .character(SmartQuotes.apostrophe),
+            typesExactly: true,
+            symbolPage: &symbolPage,
+            resetCapsLockStateIfNeeded: {},
+            advanceToNextInputMode: {}
+        )
+
+        #expect(tapped != SmartQuotes.apostrophe)
+        #expect(documentProxy.insertedTexts == [tapped, SmartQuotes.apostrophe])
     }
 
     @Test func secondSpaceAfterWordInsertsPeriodAndSpace() {
@@ -46,6 +75,27 @@ struct KeyboardTextInputControllerTests {
         #expect(documentProxy.deleteBackwardCallCount == 1)
         #expect(documentProxy.insertedTexts == [". "])
         #expect(haptics.emissionCount == 1)
+    }
+
+    @Test func secondSpaceWithPeriodShortcutOffInsertsSpace() {
+        let documentProxy = KeyboardTextDocumentProxySpy()
+        documentProxy.documentContextBeforeInput = "Hello "
+        let controller = KeyboardTextInputController(
+            documentProxy: documentProxy,
+            emitKeypress: {},
+            isPeriodShortcutEnabled: { false }
+        )
+        var symbolPage = KeyboardSymbolPage.primary
+
+        _ = controller.handleKeyActivation(
+            .space,
+            symbolPage: &symbolPage,
+            resetCapsLockStateIfNeeded: {},
+            advanceToNextInputMode: {}
+        )
+
+        #expect(documentProxy.deleteBackwardCallCount == 0)
+        #expect(documentProxy.insertedTexts == [" "])
     }
 
     @Test func deleteKeyRemovesSelectedTextWithoutLeadingContext() {
@@ -151,7 +201,7 @@ struct KeyboardTextInputControllerTests {
         #expect(haptics.emissionCount == 1)
     }
 
-    @Test func abcKeyTriggersCapsResetAndInputModeAdvance() {
+    @Test func abcKeyOpensLetterPage() {
         let documentProxy = KeyboardTextDocumentProxySpy()
         let haptics = KeyboardKeypressHapticsSpy()
         let controller = KeyboardTextInputController(
@@ -174,6 +224,36 @@ struct KeyboardTextInputControllerTests {
         )
 
         #expect(handled == true)
+        #expect(symbolPage == .letters)
+        #expect(resetCount == 0)
+        #expect(advanceCount == 0)
+        #expect(haptics.emissionCount == 1)
+    }
+
+    @Test func nextKeyboardKeyTriggersCapsResetAndInputModeAdvance() {
+        let documentProxy = KeyboardTextDocumentProxySpy()
+        let haptics = KeyboardKeypressHapticsSpy()
+        let controller = KeyboardTextInputController(
+            documentProxy: documentProxy,
+            emitKeypress: haptics.emitKeypressIfEnabled
+        )
+        var symbolPage = KeyboardSymbolPage.letters
+        var resetCount = 0
+        var advanceCount = 0
+
+        let handled = controller.handleKeyActivation(
+            .nextKeyboard,
+            symbolPage: &symbolPage,
+            resetCapsLockStateIfNeeded: {
+                resetCount += 1
+            },
+            advanceToNextInputMode: {
+                advanceCount += 1
+            }
+        )
+
+        #expect(handled == true)
+        #expect(symbolPage == .letters)
         #expect(resetCount == 1)
         #expect(advanceCount == 1)
         #expect(haptics.emissionCount == 1)
@@ -381,6 +461,59 @@ struct KeyboardTextInputControllerTests {
         #expect(deleted == true)
         #expect(documentProxy.insertedTexts == [" Replacement sentence."])
         #expect(insertion?.documentContextBeforeInput == "Previous sentence.")
+    }
+
+    @Test func spaceAfterDeletingSelectionIgnoresStaleTrailingSpace() {
+        let documentProxy = KeyboardTextDocumentProxySpy()
+        documentProxy.documentContextBeforeInput = "Hi, how are "
+        documentProxy.documentContextAfterInput = " doing?"
+        documentProxy.selectedText = "you"
+        documentProxy.hasText = true
+        let controller = KeyboardTextInputController(
+            documentProxy: documentProxy,
+            emitKeypress: {}
+        )
+        var symbolPage = KeyboardSymbolPage.primary
+
+        _ = controller.handleKeyActivation(
+            .delete,
+            symbolPage: &symbolPage,
+            resetCapsLockStateIfNeeded: {},
+            advanceToNextInputMode: {}
+        )
+        documentProxy.selectedText = nil
+        _ = controller.handleKeyActivation(
+            .space,
+            symbolPage: &symbolPage,
+            resetCapsLockStateIfNeeded: {},
+            advanceToNextInputMode: {}
+        )
+
+        #expect(documentProxy.deleteBackwardCallCount == 1)
+        #expect(documentProxy.insertedTexts == [" "])
+    }
+
+    @Test func spaceOverSelectedWordDoesNotInsertPeriod() {
+        let documentProxy = KeyboardTextDocumentProxySpy()
+        documentProxy.documentContextBeforeInput = "Hi, how are "
+        documentProxy.documentContextAfterInput = " doing?"
+        documentProxy.selectedText = "you"
+        documentProxy.hasText = true
+        let controller = KeyboardTextInputController(
+            documentProxy: documentProxy,
+            emitKeypress: {}
+        )
+        var symbolPage = KeyboardSymbolPage.primary
+
+        _ = controller.handleKeyActivation(
+            .space,
+            symbolPage: &symbolPage,
+            resetCapsLockStateIfNeeded: {},
+            advanceToNextInputMode: {}
+        )
+
+        #expect(documentProxy.deleteBackwardCallCount == 0)
+        #expect(documentProxy.insertedTexts == [" "])
     }
 
     @Test func interveningTypingClearsSelectionDeletionCorrection() {
