@@ -1,11 +1,14 @@
 import UIKit
 
-/// One page of the key grid: the letter, number, or symbol keys in one keys mode, built once
-/// and kept, so switching pages shows a page that already exists instead of building it again.
+/// One page of the key grid: the letter, number, or symbol keys in one keys mode, with the emoji
+/// search's bottom row or the usual one, with or without the globe, built once and kept, so switching pages shows a page that
+/// already exists instead of building it again.
 final class KeyboardKeyGridPage {
     struct Layout: Hashable {
         let symbolPage: KeyboardSymbolPage
         let keysMode: KeyboardKeysMode
+        let isEmojiSearch: Bool
+        let showsEmojiKey: Bool
         let showsNextKeyboardKey: Bool
     }
 
@@ -31,6 +34,8 @@ final class KeyboardKeyGridPage {
         let rows = KeyboardSymbolLayout.rows(
             for: layout.symbolPage,
             keysMode: layout.keysMode,
+            isEmojiSearch: layout.isEmojiSearch,
+            showsEmojiKey: layout.showsEmojiKey,
             showsNextKeyboardKey: layout.showsNextKeyboardKey
         )
         for (rowIndex, rowModels) in rows.enumerated() {

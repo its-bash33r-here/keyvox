@@ -16,6 +16,7 @@ extension KeyboardViewController {
             predictionCoordinator.prepare()
             applyLearnedVocabulary()
             loadPersonalVocabulary()
+            loadEmojiPredictions()
         }
         letterCaseController.reset()
         synchronizeLetterCase()
@@ -90,9 +91,13 @@ extension KeyboardViewController {
         }
     }
 
-    /// Deletes whole words for a held delete key. Returns false when no word could be deleted.
+    /// Deletes whole words for a held delete key, from the emoji search while searching. Returns
+    /// false when no word could be deleted.
     func handleDeleteWords(_ count: Int) -> Bool {
-        textInputController.deleteWordsBackward(count) { [weak self] in
+        if emojiPanel == .searching {
+            return deleteEmojiSearchWords(count)
+        }
+        return textInputController.deleteWordsBackward(count) { [weak self] in
             self?.handleTypingContextChange()
         }
     }
@@ -151,6 +156,10 @@ extension KeyboardViewController {
         textInputController.apply(
             predictionCoordinator.choiceEdit(item, allowsAutocorrection: typingTraits.allowsAutocorrection)
         )
+        // An emoji picked from the bar counts toward Frequently Used, as on the system keyboard.
+        if item.kind == .emoji {
+            emojiFrequentlyUsedStore.recordUse(of: item.text)
+        }
         handleTypingContextChange()
     }
 
@@ -186,6 +195,17 @@ extension KeyboardViewController {
         refreshPredictions()
     }
 
+    /// Hands the suggestions the emoji the bar offers for a word (`barEmoji(for:)`), and shows them
+    /// once they are read.
+    private func loadEmojiPredictions() {
+        predictionCoordinator.emojiForWord = { [weak self] word in
+            self?.barEmoji(for: word) ?? []
+        }
+        KeyboardEmojiPredictionsIndex.shared.load { [weak self] in
+            self?.refreshPredictions()
+        }
+    }
+
     /// Hands the suggestions what the keyboard learned from the user's typing.
     private func applyLearnedVocabulary() {
         predictionCoordinator.updateLearnedWords(KeyboardTypingMemory.shared.memory.learnedVocabulary)
@@ -212,7 +232,9 @@ extension KeyboardViewController {
     /// What kind of key `activation` presses, when it is a first press of a key whose taps
     /// close to a letter key may be meant for that letter.
     private func contestedOtherKey(for activation: KeyboardKeyActivation) -> ContestedTap.OtherKey? {
+        // The emoji search's keys type into the search, which predictions know nothing about.
         guard symbolPage == .letters,
+              emojiPanel != .searching,
               typingTraits.allowsPredictions,
               activation.isRepeat == false else {
             return nil
@@ -224,7 +246,7 @@ extension KeyboardViewController {
         switch kind {
         case .space, .returnKey:
             return .wordBoundary
-        case .shift, .delete, .numberSymbols, .nextKeyboard:
+        case .shift, .delete, .numberSymbols, .emoji:
             return .control
         default:
             return nil
@@ -235,7 +257,9 @@ extension KeyboardViewController {
         rootContainerView?.keyGridView.setLetterCase(letterCaseController.letterCase)
     }
 
+    /// Matches the letter case to the text; the emoji search keeps its own.
     private func synchronizeLetterCase() {
+        guard emojiPanel != .searching else { return }
         letterCaseController.synchronize(
             textBeforeCursor: textDocumentProxy.documentContextBeforeInput,
             autocapitalization: typingTraits.autocapitalization

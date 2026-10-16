@@ -112,30 +112,35 @@ enum KeyboardLayoutGeometry {
             let sideKeyWidth = isLandscape
                 ? (topRowKeyWidth * 2) + spacing
                 : (topRowKeyWidth * 2.5) + (spacing * 1.5)
-            let keyCount = rowStack.arrangedSubviews.count
-
-            if keyCount == 4 {
-                let leadingKeyWidth = sideKeyWidth - topRowKeyWidth - spacing
-                let spaceKeyWidth = rowWidth - leadingKeyWidth - topRowKeyWidth - sideKeyWidth - (spacing * 3)
-                guard leadingKeyWidth > 0, spaceKeyWidth > 0 else { return }
-                applyLayout(
-                    expectedKeyCount: 4,
-                    targetWidths: [leadingKeyWidth, topRowKeyWidth, spaceKeyWidth, sideKeyWidth]
-                )
-                return
-            }
-
+            // The page key and the emoji key share a side key's width, as on Apple's keyboard
+            // (measured with Tools/AppleKeyboardBaseline, `EmojiKeyboardProbeTests`); in the emoji
+            // search's row, without the emoji key, the page key takes the side key's width
+            // (`EmojiFrequentlyUsedProbeTests`).
+            let pairedKeyWidth = (sideKeyWidth - spacing) / 2
             let spaceKeyWidth = rowWidth - (sideKeyWidth * 2) - (spacing * 2)
 
-            guard sideKeyWidth > 0, spaceKeyWidth > 0 else { return }
+            guard pairedKeyWidth > 0, spaceKeyWidth > 0 else { return }
 
-            let targetWidths = [
-                sideKeyWidth,
-                spaceKeyWidth,
-                sideKeyWidth,
-            ]
-
-            applyLayout(expectedKeyCount: 3, targetWidths: targetWidths)
+            // On an iPhone with a Home button the globe follows the page key, as wide as it, and the
+            // emoji key takes the dictation key's place, a top-row key wide, as on Apple's keyboard
+            // there (`KeyboardSymbolLayout.HomeButtonRowMeasured`); the emoji search's row, with the
+            // globe and without the emoji key, has the usual row's widths.
+            let targetWidths: [CGFloat]
+            switch rowStack.arrangedSubviews.count {
+            case 3:
+                targetWidths = [sideKeyWidth, spaceKeyWidth, sideKeyWidth]
+            case 5:
+                targetWidths = [
+                    pairedKeyWidth,
+                    pairedKeyWidth,
+                    topRowKeyWidth,
+                    spaceKeyWidth - topRowKeyWidth - spacing,
+                    sideKeyWidth,
+                ]
+            default:
+                targetWidths = [pairedKeyWidth, pairedKeyWidth, spaceKeyWidth, sideKeyWidth]
+            }
+            applyLayout(expectedKeyCount: targetWidths.count, targetWidths: targetWidths)
         }
     }
 }

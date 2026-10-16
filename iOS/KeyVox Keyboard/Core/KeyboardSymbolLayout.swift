@@ -16,8 +16,13 @@ enum KeyboardKeyKind: Equatable {
     case abc
     case alternateSymbols
     case numberSymbols
+    case emoji
+    /// Ends the emoji search, in the return key's place while searching.
+    case emojiSearchDone
     case restoreFullKeyboard
     case shift
+    /// Moves on to the next keyboard, or lists them while held, on an iPhone that shows no globe
+    /// under the keyboard.
     case nextKeyboard
 }
 
@@ -43,7 +48,7 @@ struct KeyboardKeyModel: Equatable {
             return "#+="
         case .numberSymbols:
             return "123"
-        case .restoreFullKeyboard, .shift, .nextKeyboard:
+        case .emoji, .emojiSearchDone, .restoreFullKeyboard, .shift, .nextKeyboard:
             return ""
         }
     }
@@ -63,6 +68,10 @@ struct KeyboardKeyModel: Equatable {
             case .capsLocked:
                 return "capslock.fill"
             }
+        case .emoji:
+            return "face.smiling"
+        case .emojiSearchDone:
+            return "checkmark"
         case .nextKeyboard:
             return "globe"
         default:
@@ -86,12 +95,18 @@ struct KeyboardKeyModel: Equatable {
             return "Alternate Symbols"
         case .numberSymbols:
             return "Number Symbols"
+        case .emoji:
+            return "Emoji"
+        case .emojiSearchDone:
+            // Named as the system keyboard names its key.
+            return "done"
         case .restoreFullKeyboard:
             return "Full Keyboard"
         case .shift:
             return "Shift"
         case .nextKeyboard:
-            return "Next Keyboard"
+            // Named as the system keyboard names its key.
+            return "Next keyboard"
         }
     }
 
@@ -99,8 +114,8 @@ struct KeyboardKeyModel: Equatable {
         switch kind {
         case .character:
             return true
-        case .delete, .space, .returnKey, .abc, .alternateSymbols, .numberSymbols, .restoreFullKeyboard,
-             .shift, .nextKeyboard:
+        case .delete, .space, .returnKey, .abc, .alternateSymbols, .numberSymbols, .emoji, .emojiSearchDone,
+             .restoreFullKeyboard, .shift, .nextKeyboard:
             return false
         }
     }
@@ -109,8 +124,8 @@ struct KeyboardKeyModel: Equatable {
         switch kind {
         case .character:
             return false
-        case .delete, .space, .returnKey, .abc, .alternateSymbols, .numberSymbols, .restoreFullKeyboard,
-             .shift, .nextKeyboard:
+        case .delete, .space, .returnKey, .abc, .alternateSymbols, .numberSymbols, .emoji, .emojiSearchDone,
+             .restoreFullKeyboard, .shift, .nextKeyboard:
             return true
         }
     }
@@ -162,10 +177,40 @@ struct KeyboardKeyModel: Equatable {
 }
 
 enum KeyboardSymbolLayout {
+    /// The system keyboard's bottom row on an iPhone with a Home button, which shows no globe under
+    /// the keyboard, in top-row keys, measured with Tools/AppleKeyboardBaseline on a 375-point-wide
+    /// iPhone SE: 123 and the globe 46 points each, then dictation 37, as wide as a letter, the
+    /// space bar 147, and return 92 (`KeyboardSwitchKeyProbeTests`); the emoji search's row is the
+    /// same with done for return (`EmojiFrequentlyUsedProbeTests`).
+    enum HomeButtonRowMeasured {
+        static let pageKeyWidth: CGFloat = 1.25
+        static let nextKeyboardWidth: CGFloat = 1.25
+        /// The dictation key's width, which the emoji key takes in its place.
+        static let emojiWidth: CGFloat = 1
+    }
+
+    /// The rows of `page`; while the emoji search shows, the bottom row is the system emoji
+    /// keyboard's search row: the page key, space, and done. Without `showsEmojiKey`, the bottom
+    /// row has no emoji key; with `showsNextKeyboardKey`, it has the globe after its page key.
     static func rows(
         for page: KeyboardSymbolPage,
         keysMode: KeyboardKeysMode = .full,
+        isEmojiSearch: Bool = false,
+        showsEmojiKey: Bool = true,
         showsNextKeyboardKey: Bool = false
+    ) -> [[KeyboardKeyModel]] {
+        var rows = baseRows(for: page, keysMode: keysMode, isEmojiSearch: isEmojiSearch)
+        if showsEmojiKey == false, let bottomRow = rows.indices.last {
+            rows[bottomRow] = removingEmojiKey(from: rows[bottomRow])
+        }
+        guard showsNextKeyboardKey, let bottomRow = rows.last else { return rows }
+        return rows.dropLast() + [addingNextKeyboardKey(to: bottomRow)]
+    }
+
+    private static func baseRows(
+        for page: KeyboardSymbolPage,
+        keysMode: KeyboardKeysMode,
+        isEmojiSearch: Bool
     ) -> [[KeyboardKeyModel]] {
         var rows: [[KeyboardKeyModel]]
         switch page {
@@ -176,8 +221,12 @@ enum KeyboardSymbolLayout {
         case .alternate:
             rows = alternateRows
         }
-        if showsNextKeyboardKey, let bottomRow = rows.indices.last {
-            rows[bottomRow].insert(key(.nextKeyboard, width: 1.0), at: 1)
+        if isEmojiSearch, keysMode == .full {
+            rows[rows.count - 1] = [
+                key(page == .letters ? .numberSymbols : .abc, width: 2.5),
+                key(.space, width: 5.0),
+                key(.emojiSearchDone, width: 2.5),
+            ]
         }
 
         switch keysMode {
@@ -201,9 +250,10 @@ enum KeyboardSymbolLayout {
             + characterRow(["z", "x", "c", "v", "b", "n", "m"])
             + [key(.delete, width: 1.45)],
         [
-            key(.numberSymbols, width: 1.55),
-            key(.space, width: 4.8),
-            key(.returnKey, width: 2.0),
+            key(.numberSymbols, width: 1.25),
+            key(.emoji, width: 1.25),
+            key(.space, width: 5.0),
+            key(.returnKey, width: 2.5),
         ],
     ]
 
@@ -220,9 +270,10 @@ enum KeyboardSymbolLayout {
             key(.delete, width: 1.45),
         ],
         [
-            key(.abc, width: 1.55),
-            key(.space, width: 4.8),
-            key(.returnKey, width: 2.0),
+            key(.abc, width: 1.25),
+            key(.emoji, width: 1.25),
+            key(.space, width: 5.0),
+            key(.returnKey, width: 2.5),
         ],
     ]
 
@@ -239,11 +290,37 @@ enum KeyboardSymbolLayout {
             key(.delete, width: 1.45),
         ],
         [
-            key(.abc, width: 1.55),
-            key(.space, width: 4.8),
-            key(.returnKey, width: 2.0),
+            key(.abc, width: 1.25),
+            key(.emoji, width: 1.25),
+            key(.space, width: 5.0),
+            key(.returnKey, width: 2.5),
         ],
     ]
+
+    /// `row`, a bottom row, without its emoji key: the page key as wide as return, the space bar
+    /// taking what the other keys leave.
+    private static func removingEmojiKey(from row: [KeyboardKeyModel]) -> [KeyboardKeyModel] {
+        guard row.contains(where: { $0.kind == .emoji }), let pageKey = row.first else { return row }
+        let returnWidth = row.first { $0.kind == .returnKey }?.widthUnits ?? pageKey.widthUnits
+        let keys = [key(pageKey.kind, width: returnWidth)] + row.dropFirst().filter { $0.kind != .emoji }
+        let rowWidth = row.reduce(0) { $0 + $1.widthUnits }
+        let otherKeysWidth = keys.filter { $0.kind != .space }.reduce(0) { $0 + $1.widthUnits }
+        return keys.map { $0.kind == .space ? key(.space, width: rowWidth - otherKeysWidth) : $0 }
+    }
+
+    /// `row`, a bottom row, as the system keyboard shows it on an iPhone with a Home button: the
+    /// globe after the page key and the emoji key in the dictation key's place, the space bar taking
+    /// what the other keys leave.
+    private static func addingNextKeyboardKey(to row: [KeyboardKeyModel]) -> [KeyboardKeyModel] {
+        guard let pageKey = row.first else { return row }
+        let keys = [
+            key(pageKey.kind, width: HomeButtonRowMeasured.pageKeyWidth),
+            key(.nextKeyboard, width: HomeButtonRowMeasured.nextKeyboardWidth),
+        ] + row.dropFirst().map { $0.kind == .emoji ? key(.emoji, width: HomeButtonRowMeasured.emojiWidth) : $0 }
+        let rowWidth = row.reduce(0) { $0 + $1.widthUnits }
+        let otherKeysWidth = keys.filter { $0.kind != .space }.reduce(0) { $0 + $1.widthUnits }
+        return keys.map { $0.kind == .space ? key(.space, width: rowWidth - otherKeysWidth) : $0 }
+    }
 
     private static func characterRow(_ characters: [String]) -> [KeyboardKeyModel] {
         characters.map { key(.character($0)) }

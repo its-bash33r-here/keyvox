@@ -100,6 +100,8 @@ extension KeyboardViewController {
         rootContainerView.keyGridView.onKeyActivated = { [weak self] activation in
             self?.handleKeyActivation(activation) ?? false
         }
+        configureEmojiPage(in: rootContainerView)
+        configureEmojiSearch(in: rootContainerView)
         rootContainerView.keyGridView.onDeleteWords = { [weak self] count in
             self?.handleDeleteWords(count) ?? false
         }
@@ -114,6 +116,9 @@ extension KeyboardViewController {
         }
         rootContainerView.keyGridView.onKeyTouchDown = { [weak self] activation in
             self?.prepareContestedTap(activation)
+        }
+        rootContainerView.keyGridView.onNextKeyboardTouch = { [weak self] touchView, event in
+            self?.handleInputModeList(from: touchView, with: event)
         }
         rootContainerView.keyGridView.onCharacterGeometryChange = { [weak self] geometry, size in
             self?.predictionCoordinator.updateGeometry(geometry, keyboardSize: size)
@@ -182,11 +187,14 @@ extension KeyboardViewController {
             rootContainerView.logoBarView.removeTarget(self, action: #selector(handleMicTap), for: .touchUpInside)
             rootContainerView.fullAccessInfoButton.removeTarget(self, action: #selector(handleFullAccessInfoTap), for: .touchUpInside)
             rootContainerView.keyGridView.onKeyActivated = nil
+            unconfigureEmojiPage(rootContainerView.emojiPageView)
+            unconfigureEmojiSearch(in: rootContainerView)
             rootContainerView.keyGridView.onDeleteWords = nil
             rootContainerView.keyGridView.onCharacterKeyTyped = nil
             rootContainerView.keyGridView.onHeldKeyPopupOpened = nil
             rootContainerView.keyGridView.onDeleteKeyUp = nil
             rootContainerView.keyGridView.onKeyTouchDown = nil
+            rootContainerView.keyGridView.onNextKeyboardTouch = nil
             rootContainerView.keyGridView.onCharacterGeometryChange = nil
             rootContainerView.suggestionBarView.onItemSelected = nil
             rootContainerView.suggestionBarView.onItemLongPressed = nil

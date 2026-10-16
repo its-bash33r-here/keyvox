@@ -1,5 +1,6 @@
 import AVFoundation
 import KeyVoxCore
+import KeyVoxEmoji
 import KeyVoxPredictiveKeyboard
 import UIKit
 
@@ -123,6 +124,14 @@ final class KeyboardViewController: UIInputViewController {
             updateUI()
         }
     }
+    /// Whether the keys show the globe, read on each layout pass: the system shows none under the
+    /// keyboard on an iPhone with a Home button.
+    var showsNextKeyboardKey = false {
+        didSet {
+            guard showsNextKeyboardKey != oldValue else { return }
+            updateUI()
+        }
+    }
     var isCapsLockEnabled = false {
         didSet {
             updateUI()
@@ -136,6 +145,25 @@ final class KeyboardViewController: UIInputViewController {
             updateUI()
         }
     }
+    /// What the emoji key opened: the emoji page in the key grid's place, or its search over the
+    /// letter keys, which makes the keyboard taller; the toolbar offers no suggestions while either
+    /// shows.
+    var emojiPanel: KeyboardEmojiPanel = .closed {
+        didSet {
+            guard emojiPanel != oldValue else { return }
+            // The emoji page shows at the full keyboard's size, even from Compact Keys.
+            updatePrimaryViewHeight()
+            updateUI()
+        }
+    }
+    /// What the emoji search searches for.
+    var emojiSearchText = ""
+    /// The emoji the search shows before anything is typed: the Frequently Used emoji as the page
+    /// showed them when the search opened.
+    var emojiSearchFrequentlyUsed: [Emoji] = []
+    let emojiDeleteRepeatController = KeyboardDeleteRepeatController()
+    let emojiFrequentlyUsedStore = KeyboardEmojiFrequentlyUsedStore()
+    let emojiSkinToneStore = KeyboardEmojiSkinToneStore()
     /// Whether the last dictation is still as it landed, so the toolbar offers the dictation
     /// buttons, such as Vibes, to change it in place of suggestions.
     var isLastDictationUntouched = false {
@@ -188,6 +216,7 @@ final class KeyboardViewController: UIInputViewController {
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
         isLandscape = view.window?.windowScene?.interfaceOrientation.isLandscape ?? false
+        showsNextKeyboardKey = needsInputModeSwitchKey
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -238,6 +267,8 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // The system keyboard ends its emoji search when it goes away.
+        leaveEmojiSearch()
         guard extensionHostIsActive else { return }
         tearDownPresentation()
     }
@@ -268,7 +299,7 @@ final class KeyboardViewController: UIInputViewController {
             view.removeConstraint(constraint)
         }
 
-        let heightConstraint = view.heightAnchor.constraint(equalToConstant: keysMode.keyboardHeight(isLandscape: isLandscape))
+        let heightConstraint = view.heightAnchor.constraint(equalToConstant: keyboardHeight)
         heightConstraint.priority = .required
         heightConstraint.isActive = true
         primaryHeightConstraint = heightConstraint
@@ -276,8 +307,20 @@ final class KeyboardViewController: UIInputViewController {
 
     private func updatePrimaryViewHeight() {
         guard let primaryHeightConstraint else { return }
-        primaryHeightConstraint.constant = keysMode.keyboardHeight(isLandscape: isLandscape)
+        primaryHeightConstraint.constant = keyboardHeight
         view.setNeedsLayout()
+    }
+
+    /// The keys mode the keyboard lays out in: full while the emoji page or its search shows,
+    /// Compact Keys staying the user's mode underneath to return to.
+    private var layoutKeysMode: KeyboardKeysMode {
+        emojiPanel == .closed ? keysMode : .full
+    }
+
+    /// The keyboard's height, taller by the search results while searching emoji.
+    private var keyboardHeight: CGFloat {
+        layoutKeysMode.keyboardHeight(isLandscape: isLandscape)
+            + (emojiPanel == .searching ? KeyboardEmojiSearchGeometry.addedKeyboardHeight : 0)
     }
 
     private func configureTraitChangeObservation() {
@@ -316,14 +359,20 @@ final class KeyboardViewController: UIInputViewController {
                 return
             }
         }
+        if appSettingsStore.isEmojiKeyboardEnabled == false, emojiPanel != .closed {
+            emojiPanel = .closed
+            return
+        }
 
         let toolbarMode = currentToolbarMode()
+        rootContainerView?.emojiPageView.returnKey = emojiPageReturnKey
         rootContainerView?.apply(
             state: keyboardState,
             symbolPage: symbolPage,
-            keysMode: keysMode,
+            keysMode: layoutKeysMode,
             isLandscape: isLandscape,
-            offersPredictions: typingTraits.showsSuggestions && fieldHasLetters && isLastDictationUntouched == false,
+            offersPredictions: typingTraits.showsSuggestions && fieldHasLetters && isLastDictationUntouched == false
+                && emojiPanel == .closed,
             isCapsLockEnabled: isCapsLockEnabled,
             isDictationCapsApplied: dictationChangeController.displayedCapsTransformApplied,
             isDictationCapsUppercase: dictationChangeController.displayedCapsTextIsUppercase,
@@ -335,9 +384,11 @@ final class KeyboardViewController: UIInputViewController {
             isListFormattingEnabled: dictationChangeController.displayedListFormattingEnabled,
             isLeftHandedLayoutEnabled: appSettingsStore.isLeftHandedKeyboardLayoutEnabled,
             toolbarMode: toolbarMode,
+            emojiPanel: emojiPanel,
+            showsEmojiKey: appSettingsStore.isEmojiKeyboardEnabled,
+            showsNextKeyboardKey: showsNextKeyboardKey,
             isTTSReady: installedModels.isTTSReady,
-            isTrackpadModeActive: isTrackpadModeActive,
-            showsNextKeyboardKey: needsInputModeSwitchKey
+            isTrackpadModeActive: isTrackpadModeActive
         )
         applyLetterCase()
         if toolbarMode != .fullAccessWarning {
@@ -564,7 +615,8 @@ final class KeyboardViewController: UIInputViewController {
     func handleCompactKeysRequest() -> Bool {
         guard appSettingsStore.isCompactKeysEnabled,
               keysMode == .full,
-              symbolPage == .primary else {
+              symbolPage == .primary,
+              emojiPanel != .searching else {
             return false
         }
 
@@ -576,8 +628,15 @@ final class KeyboardViewController: UIInputViewController {
 
     @discardableResult
     func handleKeyActivation(_ keyActivation: KeyboardKeyActivation) -> Bool {
+        if emojiPanel == .searching, let handled = handleEmojiSearchActivation(keyActivation) {
+            return handled
+        }
         let activation = resolveContestedTap(keyActivation)
         let kind = activation.kind
+        if kind == .emoji {
+            openEmojiPage()
+            return true
+        }
         if kind == .restoreFullKeyboard {
             guard keysMode == .compact else { return false }
             appSettingsStore.setCompactKeysActive(false)
@@ -589,7 +648,7 @@ final class KeyboardViewController: UIInputViewController {
         if kind == .abc, keysMode == .compact {
             keysMode = .full
         }
-        if kind == .numberSymbols, symbolPage == .letters,
+        if kind == .numberSymbols, symbolPage == .letters, emojiPanel != .searching,
            KeyboardKeysMode.resolve(
                isCompactKeysEnabled: appSettingsStore.isCompactKeysEnabled,
                isCompactKeysActive: appSettingsStore.isCompactKeysActive
@@ -607,13 +666,7 @@ final class KeyboardViewController: UIInputViewController {
             typesExactly: activation.isHeldKeyChoice,
             // The delete key's press plays its haptic when the finger lifts; repeats play theirs now.
             emitsKeypress: kind != .delete || activation.isRepeat,
-            symbolPage: &updatedSymbolPage,
-            resetCapsLockStateIfNeeded: { [weak self] in
-                self?.resetCapsLockStateIfNeeded()
-            },
-            advanceToNextInputMode: { [weak self] in
-                self?.advanceToNextInputMode()
-            }
+            symbolPage: &updatedSymbolPage
         )
         // Setting the page redraws the whole keyboard, so only a key that changed it sets it.
         if updatedSymbolPage != symbolPage {

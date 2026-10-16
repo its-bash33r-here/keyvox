@@ -17,6 +17,12 @@ final class KeyboardRootView: UIView {
     let vibesButton = KeyboardVibesButton()
     let logoBarView = KeyboardLogoBarView()
     let keyGridView = KeyboardKeyGridView()
+    /// Shown over the key grid, in its place, while the emoji page is open.
+    let emojiPageView = KeyboardEmojiPageView()
+    /// Shown in the toolbar's place while the emoji page or its search is open.
+    let emojiSearchFieldView = KeyboardEmojiSearchFieldView()
+    /// Shown above the keys while searching emoji, across the keyboard.
+    let emojiSearchResultsView = KeyboardEmojiSearchResultsView()
     let suggestionBarView = KeyboardSuggestionBarView()
     let fullAccessInfoButton = KeyboardHitTargetButton(type: .system)
 
@@ -25,6 +31,11 @@ final class KeyboardRootView: UIView {
     private let centerContainerView = UIView()
     private let contentStack = UIStackView()
     private let mainStack = UIStackView()
+    private var mainStackTopConstraint: NSLayoutConstraint?
+    /// The search field sits at the top of the keyboard on the emoji page, and over the results
+    /// while searching.
+    private var emojiSearchFieldAtTopConstraint: NSLayoutConstraint?
+    private var emojiSearchFieldOverResultsConstraint: NSLayoutConstraint?
     private let fullAccessWarningContainer = UIView()
     private let fullAccessWarningLabel = UILabel()
     private var leadingControlsWidthConstraint: NSLayoutConstraint?
@@ -60,6 +71,7 @@ final class KeyboardRootView: UIView {
         guard hitView == nil || hitView === self || hitView === mainStack else { return hitView }
         let gridPoint = convert(point, to: keyGridView)
         guard keyGridView.isHidden == false,
+              emojiPageView.isHidden,
               keyGridView.point(inside: gridPoint, with: event) else {
             return hitView
         }
@@ -132,11 +144,11 @@ final class KeyboardRootView: UIView {
         updateSuggestionBarHorizontalConstraints()
     }
 
-    /// Spans the top-row slots between the settings button and the mic, which swap sides
-    /// in the left-handed layout.
+    /// Spans the top-row slots from the keyboard's edge to the mic, which swap sides in the
+    /// left-handed layout; the settings button hides while the bar shows.
     private func updateSuggestionBarHorizontalConstraints() {
         let slots: (leading: KeyboardTopRowAccessorySlot, trailing: KeyboardTopRowAccessorySlot) =
-            isLeftHandedLayoutEnabled ? (.three, .nine) : (.two, .eight)
+            isLeftHandedLayoutEnabled ? (.three, .zero) : (.one, .eight)
         guard let leadingReference = keyGridView.topRowKeyView(for: slots.leading),
               let trailingReference = keyGridView.topRowKeyView(for: slots.trailing) else {
             return
@@ -153,6 +165,25 @@ final class KeyboardRootView: UIView {
         NSLayoutConstraint.activate([leading, trailing])
         suggestionBarLeadingConstraint = leading
         suggestionBarTrailingConstraint = trailing
+    }
+
+    /// Shows the emoji page from under the search field to the key grid's bottom, the field at the
+    /// keyboard's top in the toolbar's place, so the keyboard keeps its height; or, while searching,
+    /// the field and the results
+    /// above the keys, in the room the taller keyboard makes above the toolbar's row, which keeps its
+    /// place over the keys.
+    private func applyEmojiPanel(_ panel: KeyboardEmojiPanel) {
+        let isSearching = panel == .searching
+        emojiPageView.isHidden = panel != .browsing
+        keyGridView.isContentHidden = panel == .browsing
+        keyGridView.allowsSpaceTrackpad = isSearching == false
+        emojiSearchFieldView.isHidden = panel == .closed
+        emojiSearchFieldView.isSearching = isSearching
+        emojiSearchResultsView.isHidden = isSearching == false
+        mainStackTopConstraint?.constant = KeyboardStyle.topPadding
+            + (isSearching ? KeyboardEmojiSearchGeometry.addedKeyboardHeight : 0)
+        emojiSearchFieldAtTopConstraint?.isActive = isSearching == false
+        emojiSearchFieldOverResultsConstraint?.isActive = isSearching
     }
 
     func apply(
@@ -172,12 +203,16 @@ final class KeyboardRootView: UIView {
         isListFormattingEnabled: Bool,
         isLeftHandedLayoutEnabled: Bool,
         toolbarMode: KeyboardToolbarMode,
+        emojiPanel: KeyboardEmojiPanel,
+        showsEmojiKey: Bool,
+        showsNextKeyboardKey: Bool,
         isTTSReady: Bool,
-        isTrackpadModeActive: Bool,
-        showsNextKeyboardKey: Bool
+        isTrackpadModeActive: Bool
     ) {
-        let showsBrandedToolbar = toolbarMode == .branded
-        let warningText = toolbarMode.warningText
+        // The emoji search field takes the toolbar's place.
+        let showsToolbar = emojiPanel == .closed
+        let showsBrandedToolbar = showsToolbar && toolbarMode == .branded
+        let warningText = showsToolbar ? toolbarMode.warningText : nil
         let showsToolbarWarning = warningText != nil
         let shouldShowCancel = showsBrandedToolbar && state.showsCancelButton
         // The full keyboard's letter page shows its suggestion bar while predictions are
@@ -204,8 +239,8 @@ final class KeyboardRootView: UIView {
         }
 
         settingsButton.isTrackpadModeActive = isTrackpadModeActive
-        settingsButton.isEnabled = showsBrandedToolbar && !shouldShowCancel && !isTrackpadModeActive
-        settingsButton.isHidden = !showsBrandedToolbar || shouldShowCancel
+        settingsButton.isEnabled = showsToolbarAccessories && !shouldShowCancel && !isTrackpadModeActive
+        settingsButton.isHidden = !showsToolbarAccessories || shouldShowCancel
         speakButton.isHidden = !shouldShowSpeak
         speakButton.alpha = 1
         speakButton.transform = .identity
@@ -254,14 +289,17 @@ final class KeyboardRootView: UIView {
         logoBarView.isHidden = !showsBrandedToolbar
         fullAccessWarningLabel.text = warningText
         fullAccessWarningContainer.isHidden = !showsToolbarWarning
-        fullAccessInfoButton.isHidden = !toolbarMode.showsWarningInfoButton
-        fullAccessInfoButton.isEnabled = toolbarMode.showsWarningInfoButton
+        fullAccessInfoButton.isHidden = !showsToolbar || !toolbarMode.showsWarningInfoButton
+        fullAccessInfoButton.isEnabled = showsToolbar && toolbarMode.showsWarningInfoButton
         logoBarView.applyKeyboardState(state)
         logoBarView.isEnabled = showsBrandedToolbar && state.isIndicatorEnabled
 
+        applyEmojiPanel(emojiPanel)
         keyGridView.setLayout(
             symbolPage: symbolPage,
             keysMode: keysMode,
+            isEmojiSearch: emojiPanel == .searching,
+            showsEmojiKey: showsEmojiKey,
             showsNextKeyboardKey: showsNextKeyboardKey
         )
         keyGridHeightConstraint?.constant = keysMode.keyGridHeight(isLandscape: isLandscape)
@@ -357,6 +395,9 @@ final class KeyboardRootView: UIView {
         mainStack.clipsToBounds = false
 
         addSubview(mainStack)
+        emojiPageView.translatesAutoresizingMaskIntoConstraints = false
+        emojiPageView.isHidden = true
+        addSubview(emojiPageView)
         addSubview(capsLockButton)
         addSubview(paragraphButton)
         addSubview(listsButton)
@@ -370,6 +411,12 @@ final class KeyboardRootView: UIView {
         addSubview(cancelButton)
 
         addSubview(fullAccessWarningContainer)
+        emojiSearchFieldView.translatesAutoresizingMaskIntoConstraints = false
+        emojiSearchFieldView.isHidden = true
+        addSubview(emojiSearchFieldView)
+        emojiSearchResultsView.translatesAutoresizingMaskIntoConstraints = false
+        emojiSearchResultsView.isHidden = true
+        addSubview(emojiSearchResultsView)
 
         fullAccessWarningContainer.addSubview(fullAccessWarningLabel)
         fullAccessWarningContainer.addSubview(fullAccessInfoButton)
@@ -455,11 +502,48 @@ final class KeyboardRootView: UIView {
 
             keyGridHeightConstraint!,
 
+            emojiSearchFieldView.leadingAnchor.constraint(
+                equalTo: leadingAnchor,
+                constant: KeyboardEmojiSearchGeometry.Measured.fieldInset
+            ),
+            emojiSearchFieldView.trailingAnchor.constraint(
+                equalTo: trailingAnchor,
+                constant: -KeyboardEmojiSearchGeometry.Measured.fieldInset
+            ),
+            emojiSearchFieldView.heightAnchor.constraint(equalToConstant: KeyboardEmojiSearchGeometry.Measured.fieldHeight),
+
+            emojiSearchResultsView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            emojiSearchResultsView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            emojiSearchResultsView.bottomAnchor.constraint(
+                equalTo: keyGridView.topAnchor,
+                constant: -KeyboardEmojiSearchGeometry.Measured.resultsGapAboveKeys
+            ),
+            emojiSearchResultsView.heightAnchor.constraint(equalToConstant: KeyboardEmojiSearchGeometry.Measured.resultsHeight),
+
+            emojiPageView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            emojiPageView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            emojiPageView.topAnchor.constraint(
+                equalTo: emojiSearchFieldView.bottomAnchor,
+                constant: KeyboardEmojiSearchGeometry.Measured.pageGapBelowField
+            ),
+            emojiPageView.bottomAnchor.constraint(equalTo: keyGridView.bottomAnchor),
+
             mainStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: KeyboardStyle.horizontalPadding),
             mainStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -KeyboardStyle.horizontalPadding),
-            mainStack.topAnchor.constraint(equalTo: topAnchor, constant: KeyboardStyle.topPadding),
             mainStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -KeyboardStyle.bottomPadding),
         ])
+
+        let mainStackTopConstraint = mainStack.topAnchor.constraint(equalTo: topAnchor, constant: KeyboardStyle.topPadding)
+        mainStackTopConstraint.isActive = true
+        self.mainStackTopConstraint = mainStackTopConstraint
+        // As far from the keyboard's top as the toolbar's row sits.
+        let fieldAtTop = emojiSearchFieldView.topAnchor.constraint(equalTo: topAnchor, constant: KeyboardStyle.topPadding)
+        fieldAtTop.isActive = true
+        emojiSearchFieldAtTopConstraint = fieldAtTop
+        emojiSearchFieldOverResultsConstraint = emojiSearchFieldView.bottomAnchor.constraint(
+            equalTo: emojiSearchResultsView.topAnchor,
+            constant: -KeyboardEmojiSearchGeometry.Measured.resultsGapBelowField
+        )
 
         if let cancelButtonWidthConstraint,
            let cancelButtonHeightConstraint,

@@ -13,10 +13,15 @@ nonisolated enum UserDefaultsKeys {
     static let autoCorrectionEnabled = "KeyVox.AutoCorrectionEnabled"
     static let shiftCapsLockEnabled = "KeyVox.ShiftCapsLockEnabled"
     static let predictiveTextEnabled = "KeyVox.PredictiveTextEnabled"
+    static let emojiKeyboardEnabled = "KeyVox.EmojiKeyboardEnabled"
     static let periodShortcutEnabled = "KeyVox.PeriodShortcutEnabled"
     static let opensOnNumberPage = "KeyVox.OpensOnNumberPage"
     /// How many times the user reset what the keyboard learned from their typing.
     static let keyboardTypingMemoryResetGeneration = "KeyVox.KeyboardTypingMemoryResetGeneration"
+    /// The emoji the keyboard's Frequently Used section ranks, as the user used them.
+    static let emojiFrequentlyUsed = "KeyVox.EmojiFrequentlyUsed"
+    /// The skin tone the user last chose for each emoji on the keyboard's emoji page.
+    static let emojiSkinTones = "KeyVox.EmojiSkinTones"
     static let preferBuiltInMicrophone = "KeyVox.PreferBuiltInMicrophone"
     static let liveActivitiesEnabled = "KeyVox.LiveActivitiesEnabled"
     static let sessionDisableTiming = "KeyVox.SessionDisableTiming"
